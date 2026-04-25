@@ -254,10 +254,15 @@
 
   var LIVE_REFRESH_MS = 1000;
 
-  function startCountAnim(el, from, to) {
+  function formatScore(n) {
+    if (n < 10000) return String(n);
+    return (n / 1000).toFixed(1) + "K";
+  }
+
+  function startCountAnim(el, from, to, format) {
     if (!el) return;
-    if (from === to) { el.textContent = String(to); return; }
-    liveposts.anims.push({ el: el, from: from, to: to, start: performance.now(), dur: LIVE_REFRESH_MS });
+    if (from === to) { el.textContent = format ? formatScore(to) : String(to); return; }
+    liveposts.anims.push({ el: el, from: from, to: to, start: performance.now(), dur: LIVE_REFRESH_MS, format: !!format });
     if (liveposts.animRaf == null) liveposts.animRaf = requestAnimationFrame(runCountAnims);
   }
 
@@ -267,13 +272,13 @@
       var a = liveposts.anims[i];
       if (!a.el.isConnected) continue;
       var t = (now - a.start) / a.dur;
+      var v;
       if (t >= 1) {
-        a.el.textContent = String(a.to);
+        v = a.to;
+        a.el.textContent = a.format ? formatScore(v) : String(v);
       } else {
-        // Linear interpolation: constant rate within a cycle, no slowdown at
-        // the end, so successive cycles look like one continuous count-up.
-        var v = Math.round(a.from + (a.to - a.from) * t);
-        a.el.textContent = String(v);
+        v = Math.round(a.from + (a.to - a.from) * t);
+        a.el.textContent = a.format ? formatScore(v) : String(v);
         still.push(a);
       }
     }
@@ -579,9 +584,9 @@
         +   '<span class="rank">' + (i + 1) + '</span>'
         +   '<div class="midcol unvoted">'
         +     '<div class="arrow up login-required" role="button" aria-label="upvote" tabindex="0"></div>'
-        +     '<div class="score dislikes">' + (sTarget - 1) + '</div>'
-        +     '<div class="score unvoted"><span class="lp-score">' + sStart + '</span></div>'
-        +     '<div class="score likes">' + (sTarget + 1) + '</div>'
+        +     '<div class="score dislikes">' + formatScore(sTarget - 1) + '</div>'
+        +     '<div class="score unvoted"><span class="lp-score">' + formatScore(sStart) + '</span></div>'
+        +     '<div class="score likes">' + formatScore(sTarget + 1) + '</div>'
         +     '<div class="arrow down login-required" role="button" aria-label="downvote" tabindex="0"></div>'
         +   '</div>'
         +   '<div class="entry unvoted">'
@@ -613,8 +618,8 @@
       var row = rows[k];
       var sEl = row.querySelector(".lp-score");
       var cEl = row.querySelector(".lp-comments");
-      startCountAnim(sEl, slot.sStart, slot.sTarget);
-      startCountAnim(cEl, slot.cStart, slot.cTarget);
+      startCountAnim(sEl, slot.sStart, slot.sTarget, true);
+      startCountAnim(cEl, slot.cStart, slot.cTarget, false);
       liveposts.lastScore[slot.permalink] = slot.sTarget;
       liveposts.lastComments[slot.permalink] = slot.cTarget;
     }
