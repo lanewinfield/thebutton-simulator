@@ -237,6 +237,15 @@
     expired: false,         // true once the dataset is exhausted and final timer hit 0
     paused: false,
     pressedUntil: 0,        // performance.now() until which broadcasts are suspended (matches original ~1s websocket gap after click)
+    showLivePosts: false,
+  };
+
+  var liveposts = {
+    data: null,             // sorted array of {t,T,s,c,p}
+    fetching: null,         // Promise during in-flight load
+    siteTableEl: null,
+    originalHtml: null,
+    refreshTimer: null,
   };
 
   // Throttle broadcasts/UI updates to ~100Hz max. At very high speeds, the
@@ -283,6 +292,35 @@
       }
     }
 
+    // The instant the last historical press has fired (cursor reached the end
+    // of the dataset), transition straight to the "experiment is over" state.
+    // Skip the trailing 60-second countdown animation entirely.
+    if (!playback.expired && playback.cursor >= n) {
+      playback.expired = true;
+      state.secondsLeft = 0;
+      state.lastSyncAt = Date.now();
+      var expMsg2 = JSON.stringify({ type: "just_expired", payload: { seconds_elapsed: 0 } });
+      for (var k2 = 0; k2 < openSockets.length; k2++) {
+        var s3 = openSockets[k2];
+        if (s3.readyState !== 1 || typeof s3.onmessage !== "function") continue;
+        s3.onmessage({ data: expMsg2 });
+      }
+      // Force the digits to "0000" and freeze: stop reddit.js's 10ms interval
+      // and overwrite _msLeft so it can't tick further.
+      if (window.r && window.r.thebutton) {
+        if (window.r.thebutton._countdownInterval) {
+          window.r.thebutton._countdownInterval = clearInterval(window.r.thebutton._countdownInterval);
+        }
+        window.r.thebutton._msLeft = 0;
+        window.r.thebutton._lastMsLeft = 0;
+        if (typeof window.r.thebutton._setTimer === "function") {
+          window.r.thebutton._setTimer(0);
+        }
+      }
+      playback.rafId = null;
+      return;
+    }
+
     if (realNow - lastBroadcastAt >= BROADCAST_MIN_MS && realNow >= playback.pressedUntil) {
       lastBroadcastAt = realNow;
 
@@ -325,19 +363,6 @@
         window.r.thebutton._countdownInterval = clearInterval(window.r.thebutton._countdownInterval);
       }
 
-      // End-of-dataset: trigger the canonical "experiment is over" state once
-      // the last historic press has finished its 60-second timer.
-      if (playback.cursor >= n && secondsLeft <= 0) {
-        playback.expired = true;
-        var expMsg = JSON.stringify({ type: "just_expired", payload: { seconds_elapsed: 0 } });
-        for (var j = 0; j < openSockets.length; j++) {
-          var s2 = openSockets[j];
-          if (s2.readyState !== 1 || typeof s2.onmessage !== "function") continue;
-          s2.onmessage({ data: expMsg });
-        }
-        playback.rafId = null;
-        return;
-      }
     }
 
     playback.rafId = requestAnimationFrame(tickPlayback);
@@ -392,6 +417,113 @@
 
   // Restores active classes without showing the "button reset" toast
   // (used when scrubbing back from the expired end-state).
+  function loadLivePosts() {
+    if (liveposts.data) return Promise.resolve(liveposts.data);
+    if (liveposts.fetching) return liveposts.fetching;
+    liveposts.fetching = fetch("assets/thebutton-posts.json")
+      .then(function (r) { return r.json(); })
+      .then(function (json) { liveposts.data = json; return json; })
+      .catch(function (e) {
+        console.warn("[thebutton] failed to load live posts:", e);
+        liveposts.fetching = null;
+        return null;
+      });
+    return liveposts.fetching;
+  }
+
+  function lastIndexAtOrBefore(posts, tCutoff) {
+    var lo = 0, hi = posts.length - 1, res = -1;
+    while (lo <= hi) {
+      var mid = (lo + hi) >>> 1;
+      if (posts[mid].t <= tCutoff) { res = mid; lo = mid + 1; }
+      else { hi = mid - 1; }
+    }
+    return res;
+  }
+
+  function computeHotAt(historicEpochMs, limit) {
+    if (!liveposts.data) return [];
+    var tCutoff = Math.floor(historicEpochMs / 1000);
+    var lastIdx = lastIndexAtOrBefore(liveposts.data, tCutoff);
+    if (lastIdx < 0) return [];
+    var EPOCH = 1134028003;
+    var ranked = [];
+    var WINDOW = 7 * 86400; // only consider posts from the last 7 days at this moment
+    var lower = tCutoff - WINDOW;
+    for (var i = lastIdx; i >= 0; i--) {
+      var p = liveposts.data[i];
+      if (p.t < lower) break;
+      var s = Math.max(1, p.s || 0);
+      var hot = Math.log10(s) + (p.t - EPOCH) / 45000;
+      ranked.push({ p: p, h: hot });
+    }
+    ranked.sort(function (a, b) { return b.h - a.h; });
+    return ranked.slice(0, limit).map(function (r) { return r.p; });
+  }
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, function (ch) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch];
+    });
+  }
+
+  function fmtUtc(ts) {
+    var d = new Date(ts * 1000);
+    return d.getUTCFullYear() + "-" + pad(d.getUTCMonth() + 1, 2) + "-" + pad(d.getUTCDate(), 2)
+      + " " + pad(d.getUTCHours(), 2) + ":" + pad(d.getUTCMinutes(), 2) + " UTC";
+  }
+
+  function renderLivePosts() {
+    if (!liveposts.siteTableEl || !liveposts.data) return;
+    var historicMs = playback.startMsAbs + currentHistoricMs();
+    var posts = computeHotAt(historicMs, 25);
+    var html = "";
+    for (var i = 0; i < posts.length; i++) {
+      var p = posts[i];
+      var url = "https://www.reddit.com" + p.p;
+      html += '<div class="thing link">'
+        + '<span class="rank">' + (i + 1) + '</span>'
+        + '<div class="midcol">'
+        +   '<div class="arrow up"></div>'
+        +   '<div class="score">' + p.s.toLocaleString() + '</div>'
+        +   '<div class="arrow down"></div>'
+        + '</div>'
+        + '<div class="entry">'
+        +   '<p class="title"><a class="title may-blank" href="' + escapeHtml(url) + '" target="_blank" rel="noopener">'
+        +   escapeHtml(p.T) + '</a> <span class="domain">(self.thebutton)</span></p>'
+        +   '<p class="tagline"><time>' + fmtUtc(p.t) + '</time> · '
+        +   '<a href="' + escapeHtml(url) + '" target="_blank" rel="noopener" class="comments may-blank">'
+        +   p.c.toLocaleString() + ' comments</a></p>'
+        + '</div>'
+        + '</div>';
+    }
+    if (!html) html = '<div class="thing"><div class="entry"><p class="title">no posts yet at this point in the timeline</p></div></div>';
+    liveposts.siteTableEl.innerHTML = html;
+  }
+
+  function toggleLivePosts() {
+    if (!liveposts.siteTableEl) liveposts.siteTableEl = document.getElementById("siteTable");
+    if (!liveposts.siteTableEl) return;
+    if (!playback.showLivePosts) {
+      playback.showLivePosts = true;
+      if (liveposts.originalHtml === null) liveposts.originalHtml = liveposts.siteTableEl.innerHTML;
+      showToast("loading live posts…");
+      loadLivePosts().then(function (data) {
+        if (!playback.showLivePosts) return;
+        if (!data) { showToast("live posts unavailable"); playback.showLivePosts = false; return; }
+        showToast("live posts: on (" + data.length.toLocaleString() + " posts)");
+        renderLivePosts();
+        if (liveposts.refreshTimer) clearInterval(liveposts.refreshTimer);
+        liveposts.refreshTimer = setInterval(renderLivePosts, 1000);
+      });
+    } else {
+      playback.showLivePosts = false;
+      if (liveposts.refreshTimer) { clearInterval(liveposts.refreshTimer); liveposts.refreshTimer = null; }
+      if (liveposts.originalHtml !== null) liveposts.siteTableEl.innerHTML = liveposts.originalHtml;
+      showToast("live posts: off");
+    }
+  }
+
   function resetToPressableSilent() {
     var btn = document.getElementById("thebutton");
     if (!btn) return;
@@ -629,6 +761,7 @@
       + "<li><kbd>M</kbd> &mdash; reset playback speed to 1&times;</li>"
       + "<li><kbd>Space</kbd> &mdash; pause / play</li>"
       + "<li><kbd>B</kbd> &mdash; reset the button to pressable (after expire)</li>"
+      + "<li><kbd>R</kbd> &mdash; toggle live /r/thebutton hot posts (off by default)</li>"
       + "<li><kbd>E</kbd> &mdash; force expire</li>"
       + "<li><kbd>/</kbd> or <kbd>?</kbd> &mdash; show/hide this help</li>"
       + "<li><kbd>Esc</kbd> &mdash; close overlays</li>"
@@ -835,6 +968,11 @@
     if (k === "b" || k === "B") {
       resetToPressable();
       showToast("button reset to pressable");
+      return;
+    }
+
+    if (k === "r" || k === "R") {
+      toggleLivePosts();
       return;
     }
 
