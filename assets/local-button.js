@@ -207,23 +207,15 @@
     var btn = document.getElementById("thebutton");
     if (!btn) return;
     btn.addEventListener("click", function () {
-      if (playback.userPressed || playback.expired) return;
-      // Capture the historic timer value at the moment of press — this is the
-      // user's "flair". Freeze playback until they reset with B.
+      if (playback.expired) return;
+      // Capture the historic timer value at the moment of press as the user's
+      // "flair", show a toast, and suspend broadcasts for ~1 second so reddit.js's
+      // click-handler-set 60.00 display sticks briefly (matching the original
+      // 1Hz websocket gap before the live value reasserted itself).
       var flairSeconds = state.secondsLeft;
-      state.lastSyncAt = Date.now();
       state.participants += 1;
-      playback.userPressed = true;
-      // After reddit.js's own click handler runs (it calls _setTimer(60000) and
-      // clears the local decrement interval), override the displayed value to
-      // the user's actual flair so the digits + pie show what they pressed at.
-      setTimeout(function () {
-        if (window.r && window.r.thebutton && window.r.thebutton._setTimer) {
-          var ms = Math.max(0, Math.min(60000, Math.round(flairSeconds * 1000 / 100) * 100));
-          window.r.thebutton._msLeft = ms;
-          window.r.thebutton._setTimer(ms);
-        }
-      }, 0);
+      playback.pressedUntil = performance.now() + 1000;
+      showToast("you pressed at " + flairSeconds.toFixed(2) + "s");
     }, true);
   });
 
@@ -247,7 +239,7 @@
     meta: null,
     expired: false,         // true once the dataset is exhausted and final timer hit 0
     paused: false,
-    userPressed: false,     // true after the user clicks the button — freezes display at their flair
+    pressedUntil: 0,        // performance.now() until which broadcasts are suspended (matches original ~1s websocket gap after click)
   };
 
   // Throttle broadcasts/UI updates to ~100Hz max. At very high speeds, the
@@ -266,12 +258,6 @@
     if (playback.expired) {
       // Halt — user can rewind via scrubber / keys to resume.
       playback.rafId = null;
-      return;
-    }
-    if (playback.userPressed) {
-      // The user clicked — freeze everything at their press moment. The B key
-      // (resetToPressable) clears this so playback can resume.
-      playback.rafId = requestAnimationFrame(tickPlayback);
       return;
     }
     var realNow = performance.now();
@@ -300,7 +286,7 @@
       }
     }
 
-    if (realNow - lastBroadcastAt >= BROADCAST_MIN_MS) {
+    if (realNow - lastBroadcastAt >= BROADCAST_MIN_MS && realNow >= playback.pressedUntil) {
       lastBroadcastAt = realNow;
 
       var lastPressHistoricMs = playback.cursor > 0
@@ -421,7 +407,7 @@
       container.classList.add("active", "locked");
     }
     if (window.r && window.r.thebutton) window.r.thebutton._started = false;
-    playback.userPressed = false;
+    playback.pressedUntil = 0;
   }
 
   function jumpToFraction(f) {
@@ -754,7 +740,7 @@
       container.classList.add("active", "locked");
     }
     if (window.r && window.r.thebutton) window.r.thebutton._started = false;
-    playback.userPressed = false;
+    playback.pressedUntil = 0;
     state.secondsLeft = START_SECONDS;
     state.lastSyncAt = Date.now();
     FakeSocket._broadcastTicking();
