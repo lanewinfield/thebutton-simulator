@@ -441,6 +441,23 @@
     return res;
   }
 
+  // Vote / comment counts in the dataset are the *final* values. Approximate the
+  // count at a given moment with a hyperbolic ramp: count(t) ≈ final * age/(age+H).
+  // H=4h for upvotes, H=6h for comments. Hits ~50% by H, ~80% by 4H, ~95% by 19H.
+  function estimateScore(p, nowSec) {
+    var age = nowSec - p.t;
+    if (age <= 0) return 1; // OP's self-upvote
+    var ageH = age / 3600;
+    return Math.max(1, Math.round((p.s || 0) * (ageH / (ageH + 4))));
+  }
+
+  function estimateComments(p, nowSec) {
+    var age = nowSec - p.t;
+    if (age <= 0) return 0;
+    var ageH = age / 3600;
+    return Math.round((p.c || 0) * (ageH / (ageH + 6)));
+  }
+
   function computeHotAt(historicEpochMs, limit) {
     if (!liveposts.data) return [];
     var tCutoff = Math.floor(historicEpochMs / 1000);
@@ -448,17 +465,17 @@
     if (lastIdx < 0) return [];
     var EPOCH = 1134028003;
     var ranked = [];
-    var WINDOW = 7 * 86400; // only consider posts from the last 7 days at this moment
+    var WINDOW = 7 * 86400;
     var lower = tCutoff - WINDOW;
     for (var i = lastIdx; i >= 0; i--) {
       var p = liveposts.data[i];
       if (p.t < lower) break;
-      var s = Math.max(1, p.s || 0);
-      var hot = Math.log10(s) + (p.t - EPOCH) / 45000;
-      ranked.push({ p: p, h: hot });
+      var s = estimateScore(p, tCutoff);
+      var hot = Math.log10(Math.max(1, s)) + (p.t - EPOCH) / 45000;
+      ranked.push({ p: p, h: hot, s: s });
     }
     ranked.sort(function (a, b) { return b.h - a.h; });
-    return ranked.slice(0, limit).map(function (r) { return r.p; });
+    return ranked.slice(0, limit);
   }
 
   function escapeHtml(s) {
@@ -505,10 +522,12 @@
     var posts = computeHotAt(historicEpochMs, 25);
     var html = "";
     for (var i = 0; i < posts.length; i++) {
-      var p = posts[i];
+      var entry = posts[i];
+      var p = entry.p;
       var url = "https://www.reddit.com" + p.p;
       var rowClass = (i % 2 === 0) ? "odd" : "even";
-      var s = p.s || 0;
+      var s = entry.s;
+      var c = estimateComments(p, historicSec);
       html += '<div class=" thing id-t3_x' + i + ' ' + rowClass + '  link self">'
         +   '<p class="parent"></p>'
         +   '<span class="rank">' + (i + 1) + '</span>'
@@ -527,7 +546,7 @@
         +       escapeHtml(fmtRelative(p.t, historicSec)) + '</time>'
         +     '</p>'
         +     '<ul class="flat-list buttons">'
-        +       '<li class="first"><a href="' + escapeHtml(url) + '" target="_blank" rel="noopener" class="comments may-blank">' + (p.c || 0).toLocaleString() + ' comments</a></li>'
+        +       '<li class="first"><a href="' + escapeHtml(url) + '" target="_blank" rel="noopener" class="comments may-blank">' + c.toLocaleString() + ' comments</a></li>'
         +     '</ul>'
         +     '<div class="expando" style="display: none"><span class="error">loading...</span></div>'
         +   '</div>'
