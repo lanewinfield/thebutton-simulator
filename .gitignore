@@ -1,0 +1,10 @@
+# Local data clone — too large to track. Re-clone with:
+#   git clone https://github.com/reddit/thebutton-data.git data
+data/
+
+# Editor / OS junk
+.DS_Store
+.idea/
+.vscode/
+*.swp
+__pycache__/
