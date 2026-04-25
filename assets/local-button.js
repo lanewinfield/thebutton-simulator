@@ -252,12 +252,12 @@
     animRaf: null,
   };
 
-  function easeOutCubic(t) { return 1 - Math.pow(1 - t, 3); }
+  var LIVE_REFRESH_MS = 1000;
 
-  function startCountAnim(el, from, to, duration) {
+  function startCountAnim(el, from, to) {
     if (!el) return;
     if (from === to) { el.textContent = String(to); return; }
-    liveposts.anims.push({ el: el, from: from, to: to, start: performance.now(), dur: duration });
+    liveposts.anims.push({ el: el, from: from, to: to, start: performance.now(), dur: LIVE_REFRESH_MS });
     if (liveposts.animRaf == null) liveposts.animRaf = requestAnimationFrame(runCountAnims);
   }
 
@@ -265,12 +265,14 @@
     var still = [];
     for (var i = 0; i < liveposts.anims.length; i++) {
       var a = liveposts.anims[i];
-      if (!a.el.isConnected) continue; // element was replaced by a re-render
+      if (!a.el.isConnected) continue;
       var t = (now - a.start) / a.dur;
       if (t >= 1) {
         a.el.textContent = String(a.to);
       } else {
-        var v = Math.round(a.from + (a.to - a.from) * easeOutCubic(t));
+        // Linear interpolation: constant rate within a cycle, no slowdown at
+        // the end, so successive cycles look like one continuous count-up.
+        var v = Math.round(a.from + (a.to - a.from) * t);
         a.el.textContent = String(v);
         still.push(a);
       }
@@ -611,8 +613,8 @@
       var row = rows[k];
       var sEl = row.querySelector(".lp-score");
       var cEl = row.querySelector(".lp-comments");
-      startCountAnim(sEl, slot.sStart, slot.sTarget, 600);
-      startCountAnim(cEl, slot.cStart, slot.cTarget, 600);
+      startCountAnim(sEl, slot.sStart, slot.sTarget);
+      startCountAnim(cEl, slot.cStart, slot.cTarget);
       liveposts.lastScore[slot.permalink] = slot.sTarget;
       liveposts.lastComments[slot.permalink] = slot.cTarget;
     }
@@ -631,7 +633,7 @@
         showToast("live posts: on (" + data.length.toLocaleString() + " posts)");
         renderLivePosts();
         if (liveposts.refreshTimer) clearInterval(liveposts.refreshTimer);
-        liveposts.refreshTimer = setInterval(renderLivePosts, 1000);
+        liveposts.refreshTimer = setInterval(renderLivePosts, LIVE_REFRESH_MS);
       });
     } else {
       playback.showLivePosts = false;
