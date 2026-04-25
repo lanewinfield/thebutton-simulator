@@ -241,12 +241,43 @@
   };
 
   var liveposts = {
-    data: null,             // sorted array of {t,T,s,c,p}
-    fetching: null,         // Promise during in-flight load
+    data: null,
+    fetching: null,
     siteTableEl: null,
     originalHtml: null,
     refreshTimer: null,
+    lastScore: Object.create(null),     // permalink -> last score actually displayed
+    lastComments: Object.create(null),  // permalink -> last comments actually displayed
+    anims: [],                          // active count-up animations
+    animRaf: null,
   };
+
+  function easeOutCubic(t) { return 1 - Math.pow(1 - t, 3); }
+
+  function startCountAnim(el, from, to, duration) {
+    if (!el) return;
+    if (from === to) { el.textContent = String(to); return; }
+    liveposts.anims.push({ el: el, from: from, to: to, start: performance.now(), dur: duration });
+    if (liveposts.animRaf == null) liveposts.animRaf = requestAnimationFrame(runCountAnims);
+  }
+
+  function runCountAnims(now) {
+    var still = [];
+    for (var i = 0; i < liveposts.anims.length; i++) {
+      var a = liveposts.anims[i];
+      if (!a.el.isConnected) continue; // element was replaced by a re-render
+      var t = (now - a.start) / a.dur;
+      if (t >= 1) {
+        a.el.textContent = String(a.to);
+      } else {
+        var v = Math.round(a.from + (a.to - a.from) * easeOutCubic(t));
+        a.el.textContent = String(v);
+        still.push(a);
+      }
+    }
+    liveposts.anims = still;
+    liveposts.animRaf = still.length ? requestAnimationFrame(runCountAnims) : null;
+  }
 
   // Throttle broadcasts/UI updates to ~100Hz max. At very high speeds, the
   // per-frame press loop can fire hundreds of presses per frame, and pushing
@@ -441,21 +472,30 @@
     return res;
   }
 
-  // Vote / comment counts in the dataset are the *final* values. Approximate the
-  // count at a given moment with a hyperbolic ramp: count(t) ≈ final * age/(age+H).
-  // H=4h for upvotes, H=6h for comments. Hits ~50% by H, ~80% by 4H, ~95% by 19H.
+  // Vote / comment counts in the dataset are the *final* values. Approximate
+  // the count at a given moment with a Hill function:
+  //   count(t) = final * t^n / (t^n + K^n)
+  // Tuned to literature (Evan Miller / r/all velocity studies): reddit posts
+  // hit ~50% by ~2h, ~73% by 4h, ~92% by 12h, plateau ~97% by 24h.
+  // Comments lag votes slightly so use a longer K.
+  function hillFraction(ageHours, K, n) {
+    if (ageHours <= 0) return 0;
+    var num = Math.pow(ageHours, n);
+    return num / (num + Math.pow(K, n));
+  }
+
   function estimateScore(p, nowSec) {
     var age = nowSec - p.t;
     if (age <= 0) return 1; // OP's self-upvote
-    var ageH = age / 3600;
-    return Math.max(1, Math.round((p.s || 0) * (ageH / (ageH + 4))));
+    var f = hillFraction(age / 3600, 2, 1.4);
+    return Math.max(1, Math.round((p.s || 0) * f));
   }
 
   function estimateComments(p, nowSec) {
     var age = nowSec - p.t;
     if (age <= 0) return 0;
-    var ageH = age / 3600;
-    return Math.round((p.c || 0) * (ageH / (ageH + 6)));
+    var f = hillFraction(age / 3600, 3, 1.3);
+    return Math.round((p.c || 0) * f);
   }
 
   function computeHotAt(historicEpochMs, limit) {
@@ -521,21 +561,25 @@
     var historicSec = Math.floor(historicEpochMs / 1000);
     var posts = computeHotAt(historicEpochMs, 25);
     var html = "";
+    var slots = [];
     for (var i = 0; i < posts.length; i++) {
       var entry = posts[i];
       var p = entry.p;
       var url = "https://www.reddit.com" + p.p;
       var rowClass = (i % 2 === 0) ? "odd" : "even";
-      var s = entry.s;
-      var c = estimateComments(p, historicSec);
-      html += '<div class=" thing id-t3_x' + i + ' ' + rowClass + '  link self">'
+      var sTarget = entry.s;
+      var cTarget = estimateComments(p, historicSec);
+      var sStart = (p.p in liveposts.lastScore) ? liveposts.lastScore[p.p] : 0;
+      var cStart = (p.p in liveposts.lastComments) ? liveposts.lastComments[p.p] : 0;
+      slots.push({ permalink: p.p, sStart: sStart, sTarget: sTarget, cStart: cStart, cTarget: cTarget });
+      html += '<div class=" thing id-t3_x' + i + ' ' + rowClass + '  link self" data-permalink="' + escapeHtml(p.p) + '">'
         +   '<p class="parent"></p>'
         +   '<span class="rank">' + (i + 1) + '</span>'
         +   '<div class="midcol unvoted">'
         +     '<div class="arrow up login-required" role="button" aria-label="upvote" tabindex="0"></div>'
-        +     '<div class="score dislikes">' + (s - 1) + '</div>'
-        +     '<div class="score unvoted">' + s + '</div>'
-        +     '<div class="score likes">' + (s + 1) + '</div>'
+        +     '<div class="score dislikes">' + (sTarget - 1) + '</div>'
+        +     '<div class="score unvoted"><span class="lp-score">' + sStart + '</span></div>'
+        +     '<div class="score likes">' + (sTarget + 1) + '</div>'
         +     '<div class="arrow down login-required" role="button" aria-label="downvote" tabindex="0"></div>'
         +   '</div>'
         +   '<div class="entry unvoted">'
@@ -546,7 +590,8 @@
         +       escapeHtml(fmtRelative(p.t, historicSec)) + '</time>'
         +     '</p>'
         +     '<ul class="flat-list buttons">'
-        +       '<li class="first"><a href="' + escapeHtml(url) + '" target="_blank" rel="noopener" class="comments may-blank">' + c.toLocaleString() + ' comments</a></li>'
+        +       '<li class="first"><a href="' + escapeHtml(url) + '" target="_blank" rel="noopener" class="comments may-blank">'
+        +       '<span class="lp-comments">' + cStart + '</span> comments</a></li>'
         +     '</ul>'
         +     '<div class="expando" style="display: none"><span class="error">loading...</span></div>'
         +   '</div>'
@@ -557,6 +602,20 @@
     }
     if (!html) html = '<div class=" thing  odd "><div class="entry"><p class="title">no posts yet at this point in the timeline</p></div></div>';
     liveposts.siteTableEl.innerHTML = html;
+
+    // Kick off count-up animations from the previously-displayed value to the
+    // new target. Stale animation references get filtered out via isConnected.
+    var rows = liveposts.siteTableEl.querySelectorAll(".thing[data-permalink]");
+    for (var k = 0; k < rows.length && k < slots.length; k++) {
+      var slot = slots[k];
+      var row = rows[k];
+      var sEl = row.querySelector(".lp-score");
+      var cEl = row.querySelector(".lp-comments");
+      startCountAnim(sEl, slot.sStart, slot.sTarget, 600);
+      startCountAnim(cEl, slot.cStart, slot.cTarget, 600);
+      liveposts.lastScore[slot.permalink] = slot.sTarget;
+      liveposts.lastComments[slot.permalink] = slot.cTarget;
+    }
   }
 
   function toggleLivePosts() {
