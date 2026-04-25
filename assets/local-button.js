@@ -208,14 +208,11 @@
     if (!btn) return;
     btn.addEventListener("click", function () {
       if (playback.expired) return;
-      // Capture the historic timer value at the moment of press as the user's
-      // "flair", show a toast, and suspend broadcasts for ~1 second so reddit.js's
-      // click-handler-set 60.00 display sticks briefly (matching the original
-      // 1Hz websocket gap before the live value reasserted itself).
-      var flairSeconds = state.secondsLeft;
+      // Suspend broadcasts briefly so reddit.js's click-handler-set 60.00
+      // display sticks for ~1s, matching the original websocket gap before
+      // the live value reasserted itself.
       state.participants += 1;
       playback.pressedUntil = performance.now() + 1000;
-      showToast("you pressed at " + flairSeconds.toFixed(2) + "s");
     }, true);
   });
 
