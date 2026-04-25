@@ -467,37 +467,76 @@
     });
   }
 
-  function fmtUtc(ts) {
+  var DOW = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+  var MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+  function fmtTitleUtc(ts) {
+    var d = new Date(ts * 1000);
+    return DOW[d.getUTCDay()] + " " + MON[d.getUTCMonth()] + " " + d.getUTCDate()
+      + " " + pad(d.getUTCHours(), 2) + ":" + pad(d.getUTCMinutes(), 2) + ":" + pad(d.getUTCSeconds(), 2)
+      + " " + d.getUTCFullYear() + " UTC";
+  }
+
+  function fmtIsoUtc(ts) {
     var d = new Date(ts * 1000);
     return d.getUTCFullYear() + "-" + pad(d.getUTCMonth() + 1, 2) + "-" + pad(d.getUTCDate(), 2)
-      + " " + pad(d.getUTCHours(), 2) + ":" + pad(d.getUTCMinutes(), 2) + " UTC";
+      + "T" + pad(d.getUTCHours(), 2) + ":" + pad(d.getUTCMinutes(), 2) + ":" + pad(d.getUTCSeconds(), 2) + "+00:00";
+  }
+
+  function fmtRelative(ts, now) {
+    var diff = Math.max(0, now - ts);
+    if (diff < 60) return "just now";
+    if (diff < 3600) {
+      var m = Math.floor(diff / 60);
+      return m + (m === 1 ? " minute ago" : " minutes ago");
+    }
+    if (diff < 86400) {
+      var h = Math.floor(diff / 3600);
+      return h + (h === 1 ? " hour ago" : " hours ago");
+    }
+    var d = Math.floor(diff / 86400);
+    return d + (d === 1 ? " day ago" : " days ago");
   }
 
   function renderLivePosts() {
     if (!liveposts.siteTableEl || !liveposts.data) return;
-    var historicMs = playback.startMsAbs + currentHistoricMs();
-    var posts = computeHotAt(historicMs, 25);
+    var historicEpochMs = playback.startMsAbs + currentHistoricMs();
+    var historicSec = Math.floor(historicEpochMs / 1000);
+    var posts = computeHotAt(historicEpochMs, 25);
     var html = "";
     for (var i = 0; i < posts.length; i++) {
       var p = posts[i];
       var url = "https://www.reddit.com" + p.p;
-      html += '<div class="thing link">'
-        + '<span class="rank">' + (i + 1) + '</span>'
-        + '<div class="midcol">'
-        +   '<div class="arrow up"></div>'
-        +   '<div class="score">' + p.s.toLocaleString() + '</div>'
-        +   '<div class="arrow down"></div>'
+      var rowClass = (i % 2 === 0) ? "odd" : "even";
+      var s = p.s || 0;
+      html += '<div class=" thing id-t3_x' + i + ' ' + rowClass + '  link self">'
+        +   '<p class="parent"></p>'
+        +   '<span class="rank">' + (i + 1) + '</span>'
+        +   '<div class="midcol unvoted">'
+        +     '<div class="arrow up login-required" role="button" aria-label="upvote" tabindex="0"></div>'
+        +     '<div class="score dislikes">' + (s - 1).toLocaleString() + '</div>'
+        +     '<div class="score unvoted">' + s.toLocaleString() + '</div>'
+        +     '<div class="score likes">' + (s + 1).toLocaleString() + '</div>'
+        +     '<div class="arrow down login-required" role="button" aria-label="downvote" tabindex="0"></div>'
+        +   '</div>'
+        +   '<div class="entry unvoted">'
+        +     '<p class="title"><a class="title may-blank " href="' + escapeHtml(url) + '" target="_blank" rel="noopener" tabindex="1">'
+        +       escapeHtml(p.T) + '</a>&#32;<span class="domain">(<a href="' + escapeHtml(url) + '" target="_blank" rel="noopener">self.thebutton</a>)</span></p>'
+        +     '<p class="tagline">submitted&#32;'
+        +       '<time title="' + escapeHtml(fmtTitleUtc(p.t)) + '" datetime="' + escapeHtml(fmtIsoUtc(p.t)) + '" class="live-timestamp">'
+        +       escapeHtml(fmtRelative(p.t, historicSec)) + '</time>'
+        +     '</p>'
+        +     '<ul class="flat-list buttons">'
+        +       '<li class="first"><a href="' + escapeHtml(url) + '" target="_blank" rel="noopener" class="comments may-blank">' + (p.c || 0).toLocaleString() + ' comments</a></li>'
+        +     '</ul>'
+        +     '<div class="expando" style="display: none"><span class="error">loading...</span></div>'
+        +   '</div>'
+        +   '<div class="child"></div>'
+        +   '<div class="clearleft"></div>'
         + '</div>'
-        + '<div class="entry">'
-        +   '<p class="title"><a class="title may-blank" href="' + escapeHtml(url) + '" target="_blank" rel="noopener">'
-        +   escapeHtml(p.T) + '</a> <span class="domain">(self.thebutton)</span></p>'
-        +   '<p class="tagline"><time>' + fmtUtc(p.t) + '</time> · '
-        +   '<a href="' + escapeHtml(url) + '" target="_blank" rel="noopener" class="comments may-blank">'
-        +   p.c.toLocaleString() + ' comments</a></p>'
-        + '</div>'
-        + '</div>';
+        + '<div class="clearleft"></div>';
     }
-    if (!html) html = '<div class="thing"><div class="entry"><p class="title">no posts yet at this point in the timeline</p></div></div>';
+    if (!html) html = '<div class=" thing  odd "><div class="entry"><p class="title">no posts yet at this point in the timeline</p></div></div>';
     liveposts.siteTableEl.innerHTML = html;
   }
 
